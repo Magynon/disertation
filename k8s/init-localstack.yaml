@@ -1,0 +1,30 @@
+# k8s/init-localstack.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: init-localstack
+spec:
+  template:
+    spec:
+      containers:
+        - name: init
+          image: amazon/aws-cli
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: "test"
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "test"
+            - name: AWS_DEFAULT_REGION
+              value: "eu-west-1"
+          command: ["/bin/sh", "-c"]
+          args:
+            - >
+              aws --endpoint-url=http://localstack:4566 --region eu-west-1 sqs create-queue --queue-name service-a-queue &&
+              aws --endpoint-url=http://localstack:4566 --region eu-west-1 sqs create-queue --queue-name service-b-queue &&
+              aws --endpoint-url=http://localstack:4566 --region eu-west-1 sqs create-queue --queue-name service-c-queue &&
+              aws --endpoint-url=http://localstack:4566 --region eu-west-1 sqs create-queue --queue-name service-d-queue &&
+              aws --endpoint-url=http://localstack:4566 --region eu-west-1 sqs create-queue --queue-name service-e-queue &&
+              aws --endpoint-url=http://localstack:4566 --region eu-west-1 sns create-topic --name system-events &&
+              aws --endpoint-url=http://localstack:4566 --region eu-west-1 s3api create-bucket --create-bucket-configuration LocationConstraint=eu-west-1 --bucket my-local-bucket &&
+              echo "Queues, topic, and bucket created"
+      restartPolicy: OnFailure

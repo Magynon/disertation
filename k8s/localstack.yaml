@@ -1,0 +1,39 @@
+# k8s/localstack.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: localstack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: localstack
+  template:
+    metadata:
+      labels:
+        app: localstack
+    spec:
+      containers:
+        - name: localstack
+          image: localstack/localstack:latest
+          ports:
+            - containerPort: 4566 # unified endpoint
+          env:
+            - name: SERVICES
+              value: "sqs,sns,s3"
+            - name: EDGE_PORT
+              value: "4566"
+            - name: DEBUG
+              value: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: localstack
+spec:
+  selector:
+    app: localstack
+  ports:
+    - protocol: TCP
+      port: 4566
+      targetPort: 4566

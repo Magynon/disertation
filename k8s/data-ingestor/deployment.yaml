@@ -1,0 +1,47 @@
+# k8s/data-ingestor.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-ingestor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-ingestor
+  template:
+    metadata:
+      labels:
+        app: data-ingestor
+    spec:
+      containers:
+        - name: data-ingestor
+          image: your-dockerhub-username/data-ingestor:latest
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: test
+            - name: AWS_SECRET_ACCESS_KEY
+              value: test
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_ENDPOINT
+              value: http://localstack:4566
+            - name: SQS_QUEUE_NAME
+              value: data-ingestor-queue
+            - name: SNS_TOPIC_NAME
+              value: system-events
+            - name: POSTGRES_DSN
+              value: postgres://user:password@postgres:5432/mydb?sslmode=disable
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-ingestor
+spec:
+  selector:
+    app: data-ingestor
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
