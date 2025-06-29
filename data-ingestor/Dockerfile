@@ -9,7 +9,7 @@ RUN go mod download
 
 COPY . ./
 
-RUN go build -o main .
+RUN go cmd -o cmd/data-ingestor/main .
 
 EXPOSE 8080
 CMD ["./main"]

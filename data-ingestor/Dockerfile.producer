@@ -1,0 +1,18 @@
+# Build stage
+FROM golang:1.23 AS builder
+
+WORKDIR /app
+COPY . .
+
+# 👇 THIS is the correct directory for your producer main.go
+WORKDIR /app/producer
+
+RUN ls -l /app
+# Build statically for distroless
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o /producer .
+
+# Minimal runtime image
+FROM gcr.io/distroless/static
+COPY --from=builder /producer /producer
+
+ENTRYPOINT ["/producer"]

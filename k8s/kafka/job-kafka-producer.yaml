@@ -1,0 +1,18 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-producer
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: producer
+          image: kafka-producer:latest
+          imagePullPolicy: IfNotPresent  # ✅ Use local image
+          env:
+            - name: BROKER_ADDRESS
+              value: "kafka:9092"
+            - name: TOPIC
+              value: "example-topic"

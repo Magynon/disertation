@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: init-kafka
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-init
+          image: bitnami/kafka:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Waiting for Kafka to be reachable..."
+              until kafka-topics.sh --bootstrap-server kafka:9092 --list; do sleep 2; done
+              
+              echo "Creating topic 'example-topic'..."
+              kafka-topics.sh --create \
+                --bootstrap-server kafka:9092 \
+                --replication-factor 1 \
+                --partitions 1 \
+                --topic example-topic
+
+              echo "Kafka topic created."
