@@ -11,11 +11,23 @@ KUBECTL_CONTEXT := kind-dev
 
 # === DEVELOPMENT STACK ===
 
+start-project: start-dev-stack start-services
+	@echo "🚀 Project is fully running"
+
+stop-project: stop-services stop-dev-stack
+	@echo "🧹 Project fully stopped"
+
 start-dev-stack: start-localstack start-kafka-stack
 	@echo "🚀 Dev stack is fully running: LocalStack + Kafka + Kafka UI"
 
 stop-dev-stack: stop-kafka-stack stop-localstack
 	@echo "🧹 Dev stack fully stopped"
+
+start-services: build-ingestor deploy-ingestor
+	@echo "🚀 Services started: Data Ingestor deployed"
+
+stop-services: delete-ingestor
+	@echo "🧹 Services stopped: Data Ingestor deleted"
 
 # -----------------------
 # ✉️ Kafka Producer Job
@@ -33,6 +45,9 @@ deploy-producer-job:
 delete-producer-job:
 	kubectl --context $(KUBECTL_CONTEXT) delete job kafka-producer --ignore-not-found=true
 
+# -----------------------
+# 📥 Data Ingestor Deployment
+# -----------------------
 
 build-ingestor:
 	docker build -f data-ingestor/Dockerfile.ingestor -t data-ingestor:latest ./data-ingestor
@@ -45,10 +60,6 @@ deploy-ingestor:
 
 delete-ingestor:
 	kubectl --context $(KUBECTL_CONTEXT) delete deployment data-ingestor --ignore-not-found=true
-
-restart-ingestor: delete-ingestor build-ingestor deploy-ingestor
-	@echo "✅ Data ingestor restarted with latest image"
-
 
 # -----------------------
 # Helpers for LocalStack and Kafka
