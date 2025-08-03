@@ -14,5 +14,6 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o /pro
 # Minimal runtime image
 FROM gcr.io/distroless/static
 COPY --from=builder /producer /producer
+COPY --from=builder /app/producer/report.pdf /report.pdf
 
 ENTRYPOINT ["/producer"]

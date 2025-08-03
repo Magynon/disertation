@@ -16,11 +16,12 @@ spec:
               echo "Waiting for Kafka to be reachable..."
               until kafka-topics.sh --bootstrap-server kafka:9092 --list; do sleep 2; done
               
-              echo "Creating topic 'example-topic'..."
+              echo "Creating topic 'blood-tests'..."
               kafka-topics.sh --create \
                 --bootstrap-server kafka:9092 \
                 --replication-factor 1 \
                 --partitions 1 \
-                --topic example-topic
+                --topic blood-tests \
+                --config max.message.bytes=10485760
 
               echo "Kafka topic created."

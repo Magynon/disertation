@@ -9,6 +9,34 @@
 KIND_CLUSTER_NAME := localstack-research
 KUBECTL_CONTEXT := kind-dev
 
+# === DEVELOPMENT STACK ===
+
+start-dev-stack: start-localstack start-kafka-stack
+	@echo "🚀 Dev stack is fully running: LocalStack + Kafka + Kafka UI"
+
+stop-dev-stack: stop-kafka-stack stop-localstack
+	@echo "🧹 Dev stack fully stopped"
+
+# -----------------------
+# ✉️ Kafka Producer Job
+# -----------------------
+
+build-producer:
+	docker build -f data-ingestor/Dockerfile.producer -t kafka-producer:latest ./data-ingestor
+	kind load docker-image kafka-producer:latest --name $(KIND_CLUSTER_NAME)
+
+deploy-producer-job:
+	kubectl --context $(KUBECTL_CONTEXT) apply -f k8s/kafka/job-kafka-producer.yaml
+	kubectl --context $(KUBECTL_CONTEXT) wait --for=condition=complete job/kafka-producer --timeout=60s
+	kubectl --context $(KUBECTL_CONTEXT) logs job/kafka-producer
+
+delete-producer-job:
+	kubectl --context $(KUBECTL_CONTEXT) delete job kafka-producer --ignore-not-found=true
+
+
+# -----------------------
+# Helpers for LocalStack and Kafka
+# -----------------------
 # === AWS Service Lists ===
 
 list-sqs:
@@ -33,8 +61,9 @@ list-s3:
 
 start-localstack:
 	@echo "🔌 Starting LocalStack..."
+	@kubectl config use-context kind-dev
 	@kubectl apply -f k8s/localstack.yaml
-	@kubectl wait --for=condition=ready pod -l app=localstack --timeout=30s
+	@kubectl wait --for=condition=ready pod -l app=localstack --timeout=60s
 	@echo "🌐 Port-forwarding LocalStack..."
 	@kubectl port-forward svc/localstack 4566:4566 > /dev/null 2>&1 & echo $$! > .localstack-pid
 	@sleep 2
@@ -129,25 +158,3 @@ start-kafka-stack: start-kafka start-kafka-ui start-kafka-init
 
 stop-kafka-stack: stop-kafka-ui stop-kafka stop-kafka-init
 	@echo "🛑 Kafka stack stopped"
-
-start-dev-stack: start-localstack start-kafka-stack
-	@echo "🚀 Dev stack is fully running: LocalStack + Kafka + Kafka UI"
-
-stop-dev-stack: stop-kafka-stack stop-localstack
-	@echo "🧹 Dev stack fully stopped"
-
-# -----------------------
-# ✉️ Kafka Producer Job
-# -----------------------
-
-build-producer:
-	docker build -f data-ingestor/Dockerfile.producer -t kafka-producer:latest ./data-ingestor
-	kind load docker-image kafka-producer:latest --name $(KIND_CLUSTER_NAME)
-
-deploy-producer-job:
-	kubectl --context $(KUBECTL_CONTEXT) apply -f k8s/kafka/job-kafka-producer.yaml
-	kubectl --context $(KUBECTL_CONTEXT) wait --for=condition=complete job/kafka-producer --timeout=60s
-	kubectl --context $(KUBECTL_CONTEXT) logs job/kafka-producer
-
-delete-producer-job:
-	kubectl --context $(KUBECTL_CONTEXT) delete job kafka-producer --ignore-not-found=true

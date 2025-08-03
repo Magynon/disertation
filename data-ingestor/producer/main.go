@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -13,7 +15,7 @@ func main() {
 	brokerAddress := "kafka:9092"
 
 	// Kafka topic to send messages to
-	topic := "example-topic"
+	topic := "blood-tests"
 
 	// Create a new writer (producer)
 	writer := kafka.NewWriter(kafka.WriterConfig{
@@ -24,20 +26,37 @@ func main() {
 
 	defer writer.Close()
 
+	// Read a PDF file (example.pdf) to send as a message
+	pdfFilePath := "report.pdf"
+	pdfData, err := readPDF(pdfFilePath)
+	if err != nil {
+		log.Fatalf("could not read PDF file: %v", err)
+	}
+
 	// Prepare a message to send
 	msg := kafka.Message{
-		Key:   []byte("Key-A"),                // optional, used for partitioning
-		Value: []byte("Hello Kafka from Go!"), // message payload
+		Key:   []byte("Key-A"), // optional, used for partitioning
+		Value: pdfData,         // message payload
 	}
 
 	// Send message with a timeout context
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := writer.WriteMessages(ctx, msg)
+	err = writer.WriteMessages(ctx, msg)
 	if err != nil {
 		log.Fatalf("could not write message: %v", err)
 	}
 
 	log.Println("Message sent successfully!")
+}
+
+func readPDF(filePath string) ([]byte, error) {
+	// Read the entire PDF file into memory
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read PDF file: %w", err)
+	}
+
+	return data, nil
 }
