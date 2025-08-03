@@ -15,7 +15,8 @@ spec:
     spec:
       containers:
         - name: data-ingestor
-          image: your-dockerhub-username/data-ingestor:latest
+          image: data-ingestor:latest
+          imagePullPolicy: Never
           env:
             - name: AWS_ACCESS_KEY_ID
               value: test
@@ -26,9 +27,7 @@ spec:
             - name: AWS_ENDPOINT
               value: http://localstack:4566
             - name: SQS_QUEUE_NAME
-              value: data-ingestor-queue
-            - name: SNS_TOPIC_NAME
-              value: system-events
+              value: ingestor-parser-queue
             - name: POSTGRES_DSN
               value: postgres://user:password@postgres:5432/mydb?sslmode=disable
           ports:

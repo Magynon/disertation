@@ -34,6 +34,22 @@ delete-producer-job:
 	kubectl --context $(KUBECTL_CONTEXT) delete job kafka-producer --ignore-not-found=true
 
 
+build-ingestor:
+	docker build -f data-ingestor/Dockerfile.ingestor -t data-ingestor:latest ./data-ingestor
+	kind load docker-image data-ingestor:latest --name $(KIND_CLUSTER_NAME)
+
+deploy-ingestor:
+	kubectl --context $(KUBECTL_CONTEXT) apply -f k8s/data-ingestor/deployment.yaml
+	kubectl --context $(KUBECTL_CONTEXT) wait --for=condition=available deployment/data-ingestor --timeout=60s
+	kubectl --context $(KUBECTL_CONTEXT) get pods -l app=data-ingestor
+
+delete-ingestor:
+	kubectl --context $(KUBECTL_CONTEXT) delete deployment data-ingestor --ignore-not-found=true
+
+restart-ingestor: delete-ingestor build-ingestor deploy-ingestor
+	@echo "✅ Data ingestor restarted with latest image"
+
+
 # -----------------------
 # Helpers for LocalStack and Kafka
 # -----------------------
@@ -55,7 +71,14 @@ list-s3:
 	@AWS_ACCESS_KEY_ID=test \
 	AWS_SECRET_ACCESS_KEY=test \
 	AWS_PAGER="" \
-	aws --endpoint-url=http://localhost:4566 s3 ls
+	aws --endpoint-url=http://localhost:4566 s3 ls;
+
+list-s3-contents:
+	@AWS_ACCESS_KEY_ID=test \
+	AWS_SECRET_ACCESS_KEY=test \
+	AWS_PAGER="" \
+	AWS_S3_USE_PATH_STYLE=1 \
+	aws --endpoint-url=http://localhost:4566 s3 ls s3://my-local-bucket --recursive
 
 # === LocalStack ===
 
