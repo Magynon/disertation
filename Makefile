@@ -33,6 +33,9 @@ stop-services: delete-ingestor
 # ✉️ Kafka Producer Job
 # -----------------------
 
+send-message: deploy-producer-job delete-producer-job
+	@echo "📤 Message sent to Kafka topic 'test-topic' via producer job"
+
 build-producer:
 	docker build -f data-ingestor/Dockerfile.producer -t kafka-producer:latest ./data-ingestor
 	kind load docker-image kafka-producer:latest --name $(KIND_CLUSTER_NAME)
@@ -71,6 +74,14 @@ list-sqs:
 	AWS_SECRET_ACCESS_KEY=test \
 	AWS_PAGER="" \
 	aws --endpoint-url=http://localhost:4566 --region eu-west-1 sqs list-queues
+
+list-sqs-contents:
+	@AWS_ACCESS_KEY_ID=test \
+	AWS_SECRET_ACCESS_KEY=test \
+	AWS_PAGER="" \
+	aws --endpoint-url=http://localhost:4566 sqs receive-message \
+        --queue-url http://localhost:4566/000000000000/ingestor-parser-queue \
+        --region eu-west-1
 
 list-sns:
 	@AWS_ACCESS_KEY_ID=test \
