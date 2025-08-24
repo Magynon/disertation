@@ -28,8 +28,6 @@ spec:
               value: http://localstack:4566
             - name: SQS_QUEUE_NAME
               value: ingestor-parser-queue
-            - name: POSTGRES_DSN
-              value: postgres://user:password@postgres:5432/mydb?sslmode=disable
           ports:
             - containerPort: 8080
 ---

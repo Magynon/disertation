@@ -1,5 +1,6 @@
 .kafka-pid
 .kafka-ui-pid
 .localstack-pid
+.psql-pid
 .idea
 *.pdf

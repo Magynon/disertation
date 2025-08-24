@@ -35,8 +35,8 @@ func main() {
 
 	// Prepare a message to send
 	msg := kafka.Message{
-		Key:   []byte("Key-A"), // optional, used for partitioning
-		Value: pdfData,         // message payload
+		Key:   []byte("JohnDoe,123"), // optional, used for partitioning
+		Value: pdfData,               // message payload
 	}
 
 	// Send message with a timeout context

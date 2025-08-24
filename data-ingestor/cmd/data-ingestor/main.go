@@ -1,8 +1,10 @@
 package main
 
 import (
+	"app/internal/model"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -12,6 +14,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/segmentio/kafka-go"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+	"gorm.io/gorm/schema"
 )
 
 const (
@@ -20,6 +26,8 @@ const (
 	brokerAddr = "kafka:9092"
 	topic      = "blood-tests"
 	groupID    = "blood-test-consumer-group"
+
+	dbDSN = "postgres://user:password@postgres:5432/postgres?sslmode=disable"
 )
 
 // ---------- Setup ----------
@@ -66,6 +74,22 @@ func getQueueURL(ctx context.Context, sqsClient *sqs.Client, name string) string
 	return *resp.QueueUrl
 }
 
+// ---------- DB ----------
+
+func newDB() *gorm.DB {
+	db, err := gorm.Open(postgres.Open(dbDSN), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+		NamingStrategy: schema.NamingStrategy{
+			SingularTable: true,
+		},
+	})
+	if err != nil {
+		log.Fatalf("failed to connect to DB: %v", err)
+	}
+
+	return db
+}
+
 // ---------- Core Logic ----------
 
 func uploadToS3(ctx context.Context, client *s3.Client, bucket, key string, data []byte) error {
@@ -93,7 +117,7 @@ func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, bucket, key st
 	return err
 }
 
-func processMessage(ctx context.Context, s3Client *s3.Client, sqsClient *sqs.Client, queueURL string, msg kafka.Message) {
+func processMessage(ctx context.Context, s3Client *s3.Client, sqsClient *sqs.Client, queueURL string, msg kafka.Message, db *gorm.DB) {
 	log.Printf("Received Kafka message: Key=%s, Value size=%d bytes", string(msg.Key), len(msg.Value))
 
 	// Generate unique filename
@@ -111,12 +135,72 @@ func processMessage(ctx context.Context, s3Client *s3.Client, sqsClient *sqs.Cli
 	if err := sendToSQS(ctx, sqsClient, queueURL, bucketName, key); err != nil {
 		log.Printf("failed to send message to SQS: %v", err)
 	}
+
+	patientData := bytes.SplitN(msg.Key, []byte(","), 2)
+	if len(patientData) != 2 {
+		log.Printf("invalid message key format, expected 'Name,ID': %s", msg.Key)
+		return
+	}
+
+	patientName := string(patientData[0])
+	patientSSN := string(patientData[1])
+
+	// Insert patient if not exists
+	var patient model.Patient
+	if err := db.Where("ssn = ?", patientSSN).First(&patient).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			patient = model.Patient{
+				Ssn:  patientSSN,
+				Name: patientName,
+			}
+			if err := db.Create(&patient).Error; err != nil {
+				log.Printf("failed to insert patient into DB: %v", err)
+				return
+			}
+			log.Printf("Inserted new patient: ID=%d, Name=%s", patient.ID, patient.Name)
+		} else {
+			log.Printf("failed to query patient: %v", err)
+			return
+		}
+	} else {
+		log.Printf("Patient already exists: ID=%d, Name=%s", patient.ID, patient.Name)
+	}
+
+	record := &model.Record{
+		CloudReference: key,
+	}
+	if err := db.Create(record).Error; err != nil {
+		log.Printf("failed to insert record into DB: %v", err)
+	}
+
+	patientRecordMap := &model.PatientRecordMap{
+		UserID:   patient.ID,
+		RecordID: record.ID,
+	}
+	if err := db.Create(patientRecordMap).Error; err != nil {
+		log.Printf("failed to map patient to record in DB: %v", err)
+	} else {
+		log.Printf("Mapped patient ID=%d to record ID=%d", patient.ID, record.ID)
+	}
+
+	messageQueue := &model.MessageQueue{
+		Type: model.MessageTypeParse,
+		Data: []byte(fmt.Sprintf(`{"cloudReference":"%s"}`, key)),
+	}
+	if err := db.Create(messageQueue).Error; err != nil {
+		log.Printf("failed to insert message queue entry into DB: %v", err)
+	} else {
+		log.Printf("Inserted message queue entry ID=%d for parsing", messageQueue.ID)
+	}
 }
 
 // ---------- Main ----------
 
 func main() {
 	ctx := context.Background()
+
+	db := newDB()
+	log.Println("Connected to DB")
 
 	// Setup clients
 	reader := newKafkaReader()
@@ -135,7 +219,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("could not read Kafka message: %v", err)
 		}
-		processMessage(ctx, s3Client, sqsClient, queueURL, msg)
+		processMessage(ctx, s3Client, sqsClient, queueURL, msg, db)
 	}
 }
 

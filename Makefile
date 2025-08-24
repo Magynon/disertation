@@ -17,10 +17,10 @@ start-project: start-dev-stack start-services
 stop-project: stop-services stop-dev-stack
 	@echo "🧹 Project fully stopped"
 
-start-dev-stack: start-localstack start-kafka-stack
-	@echo "🚀 Dev stack is fully running: LocalStack + Kafka + Kafka UI"
+start-dev-stack: start-localstack start-kafka-stack start-psql
+	@echo "🚀 Dev stack is fully running: LocalStack + Kafka + Kafka UI + PostgreSQL"
 
-stop-dev-stack: stop-kafka-stack stop-localstack
+stop-dev-stack: stop-kafka-stack stop-localstack stop-psql
 	@echo "🧹 Dev stack fully stopped"
 
 start-services: build-ingestor deploy-ingestor
@@ -28,6 +28,20 @@ start-services: build-ingestor deploy-ingestor
 
 stop-services: delete-ingestor
 	@echo "🧹 Services stopped: Data Ingestor deleted"
+
+# === POSTGRESQL ===
+
+.PHONY: up
+start-psql:
+	@kubectl --context $(KUBECTL_CONTEXT) apply -f k8s/psql/deployment.yaml
+	@kubectl --context $(KUBECTL_CONTEXT) rollout status deployment/postgres
+	@kubectl --context $(KUBECTL_CONTEXT) port-forward svc/postgres 5432:5432 > /dev/null 2>&1 & echo $$! > .psql-pid
+	@sleep 2
+	@echo "✅ PostgreSQL is ready at localhost:5432"
+
+.PHONY: down
+stop-psql:
+	@kubectl --context $(KUBECTL_CONTEXT) delete -f k8s/psql/deployment.yaml --ignore-not-found
 
 # -----------------------
 # ✉️ Kafka Producer Job
