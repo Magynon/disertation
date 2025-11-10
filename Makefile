@@ -23,11 +23,11 @@ start-dev-stack: start-localstack start-kafka-stack start-psql
 stop-dev-stack: stop-kafka-stack stop-localstack stop-psql
 	@echo "🧹 Dev stack fully stopped"
 
-start-services: build-ingestor deploy-ingestor
-	@echo "🚀 Services started: Data Ingestor deployed"
+start-services: build-ingestor deploy-ingestor build-parser deploy-parser
+	@echo "🚀 Services started"
 
-stop-services: delete-ingestor
-	@echo "🧹 Services stopped: Data Ingestor deleted"
+stop-services: delete-ingestor delete-parser
+	@echo "🧹 Services stopped"
 
 # === POSTGRESQL ===
 
@@ -77,6 +77,22 @@ deploy-ingestor:
 
 delete-ingestor:
 	kubectl --context $(KUBECTL_CONTEXT) delete deployment data-ingestor --ignore-not-found=true
+
+# -----------------------
+# File Parser Deployment
+# -----------------------
+
+build-parser:
+	docker build -f file-parser/Dockerfile -t file-parser:latest ./file-parser
+	kind load docker-image file-parser:latest --name $(KIND_CLUSTER_NAME)
+
+deploy-parser:
+	kubectl --context $(KUBECTL_CONTEXT) apply -f k8s/file-parser/deployment.yaml
+	kubectl --context $(KUBECTL_CONTEXT) wait --for=condition=available deployment/file-parser --timeout=60s
+	kubectl --context $(KUBECTL_CONTEXT) get pods -l app=file-parser
+
+delete-parser:
+	kubectl --context $(KUBECTL_CONTEXT) delete deployment file-parser --ignore-not-found=true
 
 # -----------------------
 # Helpers for LocalStack and Kafka

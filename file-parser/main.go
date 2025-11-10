@@ -1,21 +1,93 @@
 package main
 
 import (
-  "fmt"
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/otiai10/gosseract/v2"
 )
 
-//TIP <p>To run your code, right-click the code and select <b>Run</b>.</p> <p>Alternatively, click
-// the <icon src="AllIcons.Actions.Execute"/> icon in the gutter and select the <b>Run</b> menu item from here.</p>
+var inputQueueName = "ingestor-parser-queue"
+var outputQueueName = "parser-analyzer-queue"
+
+func newAWSClients(ctx context.Context) (*s3.Client, *sqs.Client) {
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		log.Fatalf("unable to load AWS SDK config: %v", err)
+	}
+
+	s3Client := s3.New(s3.Options{
+		Region:       cfg.Region,
+		Credentials:  cfg.Credentials,
+		HTTPClient:   cfg.HTTPClient,
+		BaseEndpoint: cfg.BaseEndpoint,
+		UsePathStyle: true,
+	})
+
+	sqsClient := sqs.New(sqs.Options{
+		Region:       cfg.Region,
+		Credentials:  cfg.Credentials,
+		HTTPClient:   cfg.HTTPClient,
+		BaseEndpoint: cfg.BaseEndpoint,
+	})
+
+	return s3Client, sqsClient
+}
+
+func getQueueURL(ctx context.Context, sqsClient *sqs.Client, name string) string {
+	resp, err := sqsClient.GetQueueUrl(ctx, &sqs.GetQueueUrlInput{QueueName: &name})
+	if err != nil {
+		log.Fatalf("failed to get SQS queue URL: %v", err)
+	}
+	return *resp.QueueUrl
+}
+
+func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, bucket, key string) error {
+	msg := fmt.Sprintf(`{"bucket":"%s","key":"%s","uploadedAt":"%s"}`,
+		bucket, key, time.Now().Format(time.RFC3339))
+
+	_, err := client.SendMessage(ctx, &sqs.SendMessageInput{
+		QueueUrl:    &queueURL,
+		MessageBody: &msg,
+	})
+	if err == nil {
+		log.Printf("Sent SQS message: %s", msg)
+	}
+	return err
+}
+
+func readFromSQS(ctx context.Context, client *sqs.Client, queueURL, bucket, key string) (string, error) {
+
+}
+
+func getBlobFromS3() {
+
+}
+
+func processEvent(ocrClient *gosseract.Client) {
+	ocrClient.SetImage("images/Architecture Diagram.png")
+	text, err := ocrClient.Text()
+	if err != nil {
+		log.Fatalf("OCR failed: %v", err)
+	}
+
+	fmt.Println("Extracted text:", text)
+}
 
 func main() {
-  //TIP <p>Press <shortcut actionId="ShowIntentionActions"/> when your caret is at the underlined text
-  // to see how GoLand suggests fixing the warning.</p><p>Alternatively, if available, click the lightbulb to view possible fixes.</p>
-  s := "gopher"
-  fmt.Printf("Hello and welcome, %s!\n", s)
+	ctx := context.Background()
 
-  for i := 1; i <= 5; i++ {
-	//TIP <p>To start your debugging session, right-click your code in the editor and select the Debug option.</p> <p>We have set one <icon src="AllIcons.Debugger.Db_set_breakpoint"/> breakpoint
-	// for you, but you can always add more by pressing <shortcut actionId="ToggleLineBreakpoint"/>.</p>
-	fmt.Println("i =", 100/i)
-  }
+	sqsClient, s3Client := newAWSClients(ctx)
+	inputQueueURL := getQueueURL(ctx, sqsClient, inputQueueName)
+	outputQueueURL := getQueueURL(ctx, sqsClient, outputQueueName)
+
+	client := gosseract.NewClient()
+	defer client.Close()
+
+	// Hello, World!
 }
