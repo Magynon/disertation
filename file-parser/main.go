@@ -24,6 +24,13 @@ var outputQueueName = "parser-analyzer-queue"
 type DataIngestorMessage struct {
 	Bucket     string `json:"bucket"`
 	Key        string `json:"key"`
+	PatientID  string `json:"patient_id"`
+	UploadedAt string `json:"uploadedAt"`
+}
+
+type FileParserMessage struct {
+	PatientID  string `json:"patientID"`
+	Report     string `json:"report"`
 	UploadedAt string `json:"uploadedAt"`
 }
 
@@ -57,12 +64,6 @@ func getQueueURL(ctx context.Context, sqsClient *sqs.Client, name string) string
 		log.Fatalf("failed to get SQS queue URL: %v", err)
 	}
 	return *resp.QueueUrl
-}
-
-type FileParserMessage struct {
-	PatientID  string `json:"patientID"`
-	Report     string `json:"report"`
-	UploadedAt string `json:"uploadedAt"`
 }
 
 func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, patientID, report string) error {
@@ -178,7 +179,7 @@ func main() {
 			report := applyOcrOnPdf(client, reportImg)
 
 			b64Report := base64.StdEncoding.EncodeToString([]byte(report))
-			patientID := msg.Key
+			patientID := msg.PatientID
 
 			err = sendToSQS(ctx, sqsClient, outputQueueURL, patientID, b64Report)
 			if err != nil {

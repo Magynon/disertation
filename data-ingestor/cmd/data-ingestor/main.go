@@ -34,6 +34,7 @@ const (
 type DataIngestorMessage struct {
 	Bucket     string `json:"bucket"`
 	Key        string `json:"key"`
+	PatientID  string `json:"patient_id"`
 	UploadedAt string `json:"uploadedAt"`
 }
 
@@ -110,10 +111,11 @@ func uploadToS3(ctx context.Context, client *s3.Client, bucket, key string, data
 	return err
 }
 
-func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, bucket, key string) error {
+func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, bucket, key, ssn string) error {
 	message := DataIngestorMessage{
 		Bucket:     bucket,
 		Key:        key,
+		PatientID:  ssn,
 		UploadedAt: time.Now().Format(time.RFC3339),
 	}
 
@@ -136,6 +138,15 @@ func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, bucket, key st
 func processMessage(ctx context.Context, s3Client *s3.Client, sqsClient *sqs.Client, queueURL string, msg kafka.Message, db *gorm.DB) {
 	log.Printf("Received Kafka message: Key=%s, Value size=%d bytes", string(msg.Key), len(msg.Value))
 
+	patientData := bytes.SplitN(msg.Key, []byte(","), 2)
+	if len(patientData) != 2 {
+		log.Printf("invalid message key format, expected 'Name,ID': %s", msg.Key)
+		return
+	}
+
+	patientName := string(patientData[0])
+	patientSSN := string(patientData[1])
+
 	// Generate unique filename
 	timestamp := time.Now().Format("20060102_150405")
 	key := fmt.Sprintf("pngs/%s_%s.png", msg.Key, timestamp)
@@ -148,18 +159,9 @@ func processMessage(ctx context.Context, s3Client *s3.Client, sqsClient *sqs.Cli
 	log.Printf("Uploaded PNG to S3: s3://%s/%s", bucketName, key)
 
 	// Notify SQS
-	if err := sendToSQS(ctx, sqsClient, queueURL, bucketName, key); err != nil {
+	if err := sendToSQS(ctx, sqsClient, queueURL, bucketName, key, patientSSN); err != nil {
 		log.Printf("failed to send message to SQS: %v", err)
 	}
-
-	patientData := bytes.SplitN(msg.Key, []byte(","), 2)
-	if len(patientData) != 2 {
-		log.Printf("invalid message key format, expected 'Name,ID': %s", msg.Key)
-		return
-	}
-
-	patientName := string(patientData[0])
-	patientSSN := string(patientData[1])
 
 	// Insert patient if not exists
 	var patient model.Patient
