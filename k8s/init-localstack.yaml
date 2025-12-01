@@ -9,6 +9,7 @@ spec:
       containers:
         - name: init
           image: amazon/aws-cli
+          imagePullPolicy: IfNotPresent
           env:
             - name: AWS_ACCESS_KEY_ID
               value: "test"

@@ -74,6 +74,7 @@ spec:
       containers:
         - name: zookeeper
           image: bitnamilegacy/zookeeper:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 2181
           env:

@@ -23,10 +23,10 @@ start-dev-stack: start-localstack start-kafka-stack start-psql
 stop-dev-stack: stop-kafka-stack stop-localstack stop-psql
 	@echo "🧹 Dev stack fully stopped"
 
-start-services: build-ingestor deploy-ingestor build-parser deploy-parser
+start-services: build-ingestor deploy-ingestor build-parser deploy-parser build-analyzer deploy-analyzer
 	@echo "🚀 Services started"
 
-stop-services: delete-ingestor delete-parser
+stop-services: delete-ingestor delete-parser delete-analyzer
 	@echo "🧹 Services stopped"
 
 # === POSTGRESQL ===
@@ -41,6 +41,11 @@ start-psql:
 
 .PHONY: down
 stop-psql:
+	@if [ -f .psql-pid ]; then \
+    		kill $$(cat .psql-pid) && rm .psql-pid && echo "Port-forward stopped."; \
+    	else \
+    		echo "No port-forward process found."; \
+    	fi
 	@kubectl --context $(KUBECTL_CONTEXT) delete -f k8s/psql/deployment.yaml --ignore-not-found
 
 # -----------------------
@@ -95,6 +100,23 @@ delete-parser:
 	kubectl --context $(KUBECTL_CONTEXT) delete deployment file-parser --ignore-not-found=true
 
 # -----------------------
+# Trend Analyzer Deployment
+# -----------------------
+
+build-analyzer:
+	docker build -f trend-analyzer/Dockerfile -t trend-analyzer:latest ./trend-analyzer
+	kind load docker-image trend-analyzer:latest --name $(KIND_CLUSTER_NAME)
+
+deploy-analyzer:
+	kubectl --context $(KUBECTL_CONTEXT) apply -f k8s/trend-analyzer/deployment.yaml
+	kubectl --context $(KUBECTL_CONTEXT) wait --for=condition=available deployment/trend-analyzer --timeout=60s
+	kubectl --context $(KUBECTL_CONTEXT) get pods -l app=trend-analyzer
+
+delete-analyzer:
+	kubectl --context $(KUBECTL_CONTEXT) delete deployment trend-analyzer --ignore-not-found=true
+
+
+# -----------------------
 # Helpers for LocalStack and Kafka
 # -----------------------
 # === AWS Service Lists ===
@@ -105,12 +127,20 @@ list-sqs:
 	AWS_PAGER="" \
 	aws --endpoint-url=http://localhost:4566 --region eu-west-1 sqs list-queues
 
-list-sqs-contents:
+list-sqs-contents-ingestor-parser-queue:
 	@AWS_ACCESS_KEY_ID=test \
 	AWS_SECRET_ACCESS_KEY=test \
 	AWS_PAGER="" \
 	aws --endpoint-url=http://localhost:4566 sqs receive-message \
         --queue-url http://localhost:4566/000000000000/ingestor-parser-queue \
+        --region eu-west-1
+
+list-sqs-contents-parser-analyzer-queue:
+	@AWS_ACCESS_KEY_ID=test \
+	AWS_SECRET_ACCESS_KEY=test \
+	AWS_PAGER="" \
+	aws --endpoint-url=http://localhost:4566 sqs receive-message \
+        --queue-url http://localhost:4566/000000000000/parser-analyzer-queue \
         --region eu-west-1
 
 list-sns:
@@ -228,8 +258,8 @@ stop-kafka-ui:
 
 # === Kafka Stack (Kafka + UI) ===
 
-start-kafka-stack: start-kafka start-kafka-ui start-kafka-init
+start-kafka-stack: start-kafka start-kafka-init
 	@echo "✅ Kafka stack is running (Kafka + Kafka UI + Init Job)"
 
-stop-kafka-stack: stop-kafka-ui stop-kafka stop-kafka-init
+stop-kafka-stack: stop-kafka stop-kafka-init
 	@echo "🛑 Kafka stack stopped"

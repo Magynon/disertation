@@ -9,6 +9,7 @@ spec:
       containers:
         - name: kafka-init
           image: bitnamilegacy/kafka:latest
+          imagePullPolicy: IfNotPresent
           command:
             - /bin/bash
             - -c

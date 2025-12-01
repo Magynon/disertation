@@ -34,7 +34,7 @@ const (
 type DataIngestorMessage struct {
 	Bucket     string `json:"bucket"`
 	Key        string `json:"key"`
-	PatientID  string `json:"patient_id"`
+	PatientID  int64  `json:"patient_id"`
 	UploadedAt string `json:"uploadedAt"`
 }
 
@@ -111,11 +111,11 @@ func uploadToS3(ctx context.Context, client *s3.Client, bucket, key string, data
 	return err
 }
 
-func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, bucket, key, ssn string) error {
+func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, bucket, key string, patientID int64) error {
 	message := DataIngestorMessage{
 		Bucket:     bucket,
 		Key:        key,
-		PatientID:  ssn,
+		PatientID:  patientID,
 		UploadedAt: time.Now().Format(time.RFC3339),
 	}
 
@@ -158,11 +158,6 @@ func processMessage(ctx context.Context, s3Client *s3.Client, sqsClient *sqs.Cli
 	}
 	log.Printf("Uploaded PNG to S3: s3://%s/%s", bucketName, key)
 
-	// Notify SQS
-	if err := sendToSQS(ctx, sqsClient, queueURL, bucketName, key, patientSSN); err != nil {
-		log.Printf("failed to send message to SQS: %v", err)
-	}
-
 	// Insert patient if not exists
 	var patient model.Patient
 	if err := db.Where("ssn = ?", patientSSN).First(&patient).Error; err != nil {
@@ -182,6 +177,11 @@ func processMessage(ctx context.Context, s3Client *s3.Client, sqsClient *sqs.Cli
 		}
 	} else {
 		log.Printf("Patient already exists: ID=%d, Name=%s", patient.ID, patient.Name)
+	}
+
+	// Notify SQS
+	if err := sendToSQS(ctx, sqsClient, queueURL, bucketName, key, patient.ID); err != nil {
+		log.Printf("failed to send message to SQS: %v", err)
 	}
 
 	record := &model.Record{

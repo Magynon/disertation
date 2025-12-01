@@ -1,15 +1,33 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.21-alpine
+
+# Builder stage
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-COPY go.mod ./
-COPY go.sum ./
+RUN apk add --no-cache git
+
+COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . ./
+COPY . .
 
-RUN go cmd -o main .
+WORKDIR /app/cmd/trend-analyzer
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /analyzer main.go
+
+# Runtime stage
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+COPY --from=builder /analyzer /analyzer
+
+WORKDIR /
+
+USER appuser
 
 EXPOSE 8080
-CMD ["./main"]
+
+CMD ["/analyzer"]

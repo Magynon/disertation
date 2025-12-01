@@ -16,6 +16,7 @@ spec:
       containers:
         - name: localstack
           image: localstack/localstack:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 4566 # unified endpoint
           env:

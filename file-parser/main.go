@@ -24,12 +24,14 @@ var outputQueueName = "parser-analyzer-queue"
 type DataIngestorMessage struct {
 	Bucket     string `json:"bucket"`
 	Key        string `json:"key"`
-	PatientID  string `json:"patient_id"`
+	PatientID  int64  `json:"patient_id"`
 	UploadedAt string `json:"uploadedAt"`
+
+	ReceiptHandle string `json:"receiptHandle"`
 }
 
 type FileParserMessage struct {
-	PatientID  string `json:"patientID"`
+	PatientID  int64  `json:"patientID"`
 	Report     string `json:"report"`
 	UploadedAt string `json:"uploadedAt"`
 }
@@ -66,7 +68,7 @@ func getQueueURL(ctx context.Context, sqsClient *sqs.Client, name string) string
 	return *resp.QueueUrl
 }
 
-func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, patientID, report string) error {
+func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, report string, patientID int64) error {
 	message := FileParserMessage{
 		PatientID:  patientID,
 		Report:     report,
@@ -105,12 +107,27 @@ func readFromSQS(ctx context.Context, client *sqs.Client, queueURL string) ([]*D
 	return lo.Map(resp.Messages, func(msg types.Message, _ int) *DataIngestorMessage {
 		var unmarshaled DataIngestorMessage
 		err := json.Unmarshal([]byte(*msg.Body), &unmarshaled)
-		if err == nil {
-			return &unmarshaled
+		if err != nil {
+			log.Printf("failed to unmarshal SQS message: %v", err)
+			return nil
 		}
+
+		unmarshaled.ReceiptHandle = *msg.ReceiptHandle
 
 		return &unmarshaled
 	}), nil
+}
+
+func deleteMessageFromSQS(ctx context.Context, client *sqs.Client, queueURL string, msg *DataIngestorMessage) error {
+	_, err := client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+		QueueUrl:      &queueURL,
+		ReceiptHandle: awsString(msg.ReceiptHandle),
+	})
+	if err == nil {
+		log.Printf("Deleted SQS message: %s", msg.ReceiptHandle)
+	}
+
+	return err
 }
 
 func getBlobFromS3(s3Client *s3.Client, bucket, key string) ([]byte, error) {
@@ -170,6 +187,12 @@ func main() {
 		for _, msg := range messages {
 			log.Printf("Processing message: %s", msg)
 
+			err = deleteMessageFromSQS(ctx, sqsClient, inputQueueURL, msg)
+			if err != nil {
+				log.Printf("failed to delete message from SQS: %v", err)
+				continue
+			}
+
 			reportImg, err := getBlobFromS3(s3Client, msg.Bucket, msg.Key)
 			if err != nil {
 				log.Printf("failed to get blob from S3: %v", err)
@@ -181,7 +204,7 @@ func main() {
 			b64Report := base64.StdEncoding.EncodeToString([]byte(report))
 			patientID := msg.PatientID
 
-			err = sendToSQS(ctx, sqsClient, outputQueueURL, patientID, b64Report)
+			err = sendToSQS(ctx, sqsClient, outputQueueURL, b64Report, patientID)
 			if err != nil {
 				log.Printf("failed to send to output SQS: %v", err)
 			}

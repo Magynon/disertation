@@ -1,0 +1,42 @@
+# k8s/trend-analyzer.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trend-analyzer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trend-analyzer
+  template:
+    metadata:
+      labels:
+        app: trend-analyzer
+    spec:
+      containers:
+        - name: trend-analyzer
+          image: trend-analyzer:latest
+          imagePullPolicy: Never
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: test
+            - name: AWS_SECRET_ACCESS_KEY
+              value: test
+            - name: AWS_REGION
+              value: eu-west-1
+            - name: AWS_ENDPOINT_URL
+              value: http://localstack:4566
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trend-analyzer
+spec:
+  selector:
+    app: trend-analyzer
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
