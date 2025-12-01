@@ -4,6 +4,7 @@ import (
 	"app/internal/model"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -29,6 +30,12 @@ const (
 
 	dbDSN = "postgres://user:password@postgres:5432/postgres?sslmode=disable"
 )
+
+type DataIngestorMessage struct {
+	Bucket     string `json:"bucket"`
+	Key        string `json:"key"`
+	UploadedAt string `json:"uploadedAt"`
+}
 
 // ---------- Setup ----------
 
@@ -97,23 +104,32 @@ func uploadToS3(ctx context.Context, client *s3.Client, bucket, key string, data
 		Bucket:      &bucket,
 		Key:         &key,
 		Body:        bytes.NewReader(data),
-		ContentType: awsString("application/pdf"),
+		ContentType: awsString("image/png"),
 		ACL:         types.ObjectCannedACLPrivate,
 	})
 	return err
 }
 
 func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, bucket, key string) error {
-	msg := fmt.Sprintf(`{"bucket":"%s","key":"%s","uploadedAt":"%s"}`,
-		bucket, key, time.Now().Format(time.RFC3339))
+	message := DataIngestorMessage{
+		Bucket:     bucket,
+		Key:        key,
+		UploadedAt: time.Now().Format(time.RFC3339),
+	}
 
-	_, err := client.SendMessage(ctx, &sqs.SendMessageInput{
+	msg, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.SendMessage(ctx, &sqs.SendMessageInput{
 		QueueUrl:    &queueURL,
-		MessageBody: &msg,
+		MessageBody: awsString(string(msg)),
 	})
 	if err == nil {
 		log.Printf("Sent SQS message: %s", msg)
 	}
+
 	return err
 }
 
@@ -122,14 +138,14 @@ func processMessage(ctx context.Context, s3Client *s3.Client, sqsClient *sqs.Cli
 
 	// Generate unique filename
 	timestamp := time.Now().Format("20060102_150405")
-	key := fmt.Sprintf("pdfs/%s_%s.pdf", msg.Key, timestamp)
+	key := fmt.Sprintf("pngs/%s_%s.png", msg.Key, timestamp)
 
 	// Upload to S3
 	if err := uploadToS3(ctx, s3Client, bucketName, key, msg.Value); err != nil {
 		log.Printf("failed to upload to S3: %v", err)
 		return
 	}
-	log.Printf("Uploaded PDF to S3: s3://%s/%s", bucketName, key)
+	log.Printf("Uploaded PNG to S3: s3://%s/%s", bucketName, key)
 
 	// Notify SQS
 	if err := sendToSQS(ctx, sqsClient, queueURL, bucketName, key); err != nil {

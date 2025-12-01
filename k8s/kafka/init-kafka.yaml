@@ -8,7 +8,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: kafka-init
-          image: bitnami/kafka:latest
+          image: bitnamilegacy/kafka:latest
           command:
             - /bin/bash
             - -c

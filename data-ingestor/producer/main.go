@@ -26,17 +26,17 @@ func main() {
 
 	defer writer.Close()
 
-	// Read a PDF file (example.pdf) to send as a message
-	pdfFilePath := "report.pdf"
-	pdfData, err := readPDF(pdfFilePath)
+	// Read a PNG file (example.png) to send as a message
+	pngFilePath := "report_real.png"
+	pngData, err := readPNG(pngFilePath)
 	if err != nil {
-		log.Fatalf("could not read PDF file: %v", err)
+		log.Fatalf("could not read PNG file: %v", err)
 	}
 
 	// Prepare a message to send
 	msg := kafka.Message{
 		Key:   []byte("JohnDoe,123"), // optional, used for partitioning
-		Value: pdfData,               // message payload
+		Value: pngData,               // message payload
 	}
 
 	// Send message with a timeout context
@@ -51,11 +51,11 @@ func main() {
 	log.Println("Message sent successfully!")
 }
 
-func readPDF(filePath string) ([]byte, error) {
-	// Read the entire PDF file into memory
+func readPNG(filePath string) ([]byte, error) {
+	// Read the entire PNG file into memory
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read PDF file: %w", err)
+		return nil, fmt.Errorf("failed to read PNG file: %w", err)
 	}
 
 	return data, nil
