@@ -19,7 +19,7 @@ CREATE TYPE message_status AS ENUM (
 CREATE TABLE state
 (
     id         BIGSERIAL PRIMARY KEY,
-    data       JSONB     NOT NULL,
+    data       TEXT     NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMP
 );

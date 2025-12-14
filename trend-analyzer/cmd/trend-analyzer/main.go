@@ -25,7 +25,7 @@ const (
 )
 
 type FileParserMessage struct {
-	PatientID  string `json:"patientID"`
+	PatientID  int64  `json:"patientID"`
 	Report     string `json:"report"`
 	UploadedAt string `json:"uploadedAt"`
 }
@@ -97,11 +97,11 @@ func readFromSQS(ctx context.Context, client *sqs.Client, queueURL string) ([]*F
 	}), nil
 }
 
-func emitSNSNotification(db *gorm.DB, patientID string) error {
+func emitSNSNotification(db *gorm.DB, patientID int64) error {
 	patient := &model.Patient{}
 	result := db.Where("id = ?", patientID).First(patient)
 	if result.Error != nil {
-		log.Printf("failed to get patient %s for SNS notification: %v", patientID, result.Error)
+		log.Printf("failed to get patient %d for SNS notification: %v", patientID, result.Error)
 		return result.Error
 	}
 
@@ -124,7 +124,7 @@ func getSanitizedReport(report string) (string, error) {
 	return encoded, nil
 }
 
-func saveCurrentStateForPatient(db *gorm.DB, report, patientID string) error {
+func saveCurrentStateForPatient(db *gorm.DB, report string, patientID int64) error {
 	patient := &model.Patient{}
 	result := db.Where("id = ?", patientID).First(patient)
 	if result.Error != nil {
@@ -157,11 +157,11 @@ func saveCurrentStateForPatient(db *gorm.DB, report, patientID string) error {
 	return nil
 }
 
-func diagnosePatient(db *gorm.DB, patientID string) *MLResponse {
+func diagnosePatient(db *gorm.DB, patientID int64) *MLResponse {
 	var patientStateMaps []model.PatientStateMap
 	result := db.Where("user_id = ?", patientID).Find(&patientStateMaps)
 	if result.Error != nil {
-		log.Printf("failed to get state maps for patient %s: %v", patientID, result.Error)
+		log.Printf("failed to get state maps for patient %d: %v", patientID, result.Error)
 		return nil
 	}
 
@@ -171,7 +171,7 @@ func diagnosePatient(db *gorm.DB, patientID string) *MLResponse {
 		state := &model.State{}
 		result := db.Where("id = ?", psm.StateID).First(state)
 		if result.Error != nil {
-			log.Printf("failed to get state %d for patient %s: %v", psm.StateID, patientID, result.Error)
+			log.Printf("failed to get state %d for patient %d: %v", psm.StateID, patientID, result.Error)
 			continue
 		}
 
@@ -186,10 +186,10 @@ func diagnosePatient(db *gorm.DB, patientID string) *MLResponse {
 }`
 
 	// Placeholder for AI model interaction
-	log.Printf("AI Prompt for patient %s:\n%s", patientID, prompt)
+	log.Printf("AI Prompt for patient %d:\n%s", patientID, prompt)
 
 	mlResponse := queryML()
-	log.Printf("Diagnosis for patient %s completed (placeholder)", patientID)
+	log.Printf("Diagnosis for patient %d completed (placeholder)", patientID)
 
 	return mlResponse
 }
@@ -221,23 +221,23 @@ func main() {
 		for _, msg := range incomingSQSMessages {
 			report, err := getSanitizedReport(msg.Report)
 			if err != nil {
-				log.Printf("failed to sanitize report for patient %s: %v", msg.PatientID, err)
+				log.Printf("failed to sanitize report for patient %d: %v", msg.PatientID, err)
 			}
 
 			err = saveCurrentStateForPatient(db, report, msg.PatientID)
 			if err != nil {
-				log.Printf("failed to save current state for patient %s: %v", msg.PatientID, err)
+				log.Printf("failed to save current state for patient %d: %v", msg.PatientID, err)
 			}
 
 			// TODO ETL logic to come here
 
 			patientTrend := diagnosePatient(db, msg.PatientID)
-			log.Printf("Patient %s trend analysis: %+v", msg.PatientID, patientTrend)
+			log.Printf("Patient %d trend analysis: %+v", msg.PatientID, patientTrend)
 
 			if patientTrend.Concern {
 				err = emitSNSNotification(db, msg.PatientID)
 				if err != nil {
-					log.Printf("failed to emit SNS notification for patient %s: %v", msg.PatientID, err)
+					log.Printf("failed to emit SNS notification for patient %d: %v", msg.PatientID, err)
 				}
 			}
 		}
