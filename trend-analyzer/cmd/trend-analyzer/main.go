@@ -1,10 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"os"
+	"strings"
 	"trend-analyzer/internal/model"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -28,6 +34,8 @@ type FileParserMessage struct {
 	PatientID  int64  `json:"patientID"`
 	Report     string `json:"report"`
 	UploadedAt string `json:"uploadedAt"`
+
+	ReceiptHandle string `json:"receiptHandle"`
 }
 
 type MLResponse struct {
@@ -89,12 +97,27 @@ func readFromSQS(ctx context.Context, client *sqs.Client, queueURL string) ([]*F
 	return lo.Map(resp.Messages, func(msg types.Message, _ int) *FileParserMessage {
 		var unmarshaled FileParserMessage
 		err := json.Unmarshal([]byte(*msg.Body), &unmarshaled)
-		if err == nil {
+		if err != nil {
+			log.Printf("failed to unmarshal SQS message: %v", err)
 			return &unmarshaled
 		}
 
+		unmarshaled.ReceiptHandle = *msg.ReceiptHandle
+
 		return &unmarshaled
 	}), nil
+}
+
+func deleteMessageFromSQS(ctx context.Context, client *sqs.Client, queueURL string, msg *FileParserMessage) error {
+	_, err := client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+		QueueUrl:      &queueURL,
+		ReceiptHandle: awsString(msg.ReceiptHandle),
+	})
+	if err == nil {
+		log.Printf("Deleted SQS message: %s", msg.ReceiptHandle)
+	}
+
+	return err
 }
 
 func emitSNSNotification(db *gorm.DB, patientID int64) error {
@@ -116,12 +139,17 @@ func getSanitizedReport(report string) (string, error) {
 	}
 
 	decodedString := string(decoded)
-	// Placeholder for actual sanitization logic
-	sanitizedReport := decodedString
+	prompt := "Sanitize the following medical report by removing any irrelevant, personally identifiable information (PII) such as names, dates, addresses, phone numbers, and any other sensitive data." +
+		"The report might contain some weird data because it has been through an OCR process. This was a table originally so keep that in mind when you fix the data. Please only include the report and nothing else in your answer.\n\n" + decodedString
 
-	encoded := base64.StdEncoding.EncodeToString([]byte(sanitizedReport))
+	response, err := sendToGemini(prompt)
+	if err != nil {
+		return "", err
+	}
 
-	return encoded, nil
+	log.Printf("Sanitized report in Gemini: %s", response)
+
+	return base64.StdEncoding.EncodeToString([]byte(response)), nil
 }
 
 func saveCurrentStateForPatient(db *gorm.DB, report string, patientID int64) error {
@@ -175,7 +203,13 @@ func diagnosePatient(db *gorm.DB, patientID int64) *MLResponse {
 			continue
 		}
 
-		patientHistory += state.Data + "\n"
+		decoded, err := base64.StdEncoding.DecodeString(state.Data)
+		if err != nil {
+			log.Printf("failed to decode state data for state %d of patient %d: %v", psm.StateID, patientID, err)
+			continue
+		}
+
+		patientHistory += string(decoded) + "\n"
 	}
 
 	prompt := "Based on the following patient history, provide a trend analysis and see if you can spot any concerning patterns:\n" + patientHistory +
@@ -183,23 +217,81 @@ func diagnosePatient(db *gorm.DB, patientID int64) *MLResponse {
 		`{
   "diagnosis": "string",
   "concern": "boolean",
-}`
+}` + "It is very important that you strictly follow the json format and nothing else because I am going to parse it programmatically."
 
-	// Placeholder for AI model interaction
-	log.Printf("AI Prompt for patient %d:\n%s", patientID, prompt)
+	textResponse, err := sendToGemini(prompt)
+	if err != nil {
+		log.Printf("failed to get response from Gemini for patient %d: %v", patientID, err)
+		return nil
+	}
 
-	mlResponse := queryML()
+	textResponse = strings.TrimPrefix(textResponse, "```json")
+	textResponse = strings.TrimSuffix(textResponse, "```")
+
+	var mlResponse MLResponse
+	err = json.Unmarshal([]byte(textResponse), &mlResponse)
+	if err != nil {
+		log.Printf("failed to unmarshal Gemini response for patient %d: %s, %v", patientID, textResponse, err)
+		return nil
+	}
+
 	log.Printf("Diagnosis for patient %d completed (placeholder)", patientID)
 
-	return mlResponse
+	return &mlResponse
 }
 
-func queryML() *MLResponse {
-	// Placeholder for actual ML model querying logic
-	return &MLResponse{
-		Diagnosis: "No concerning patterns detected.",
-		Concern:   false,
+func sendToGemini(prompt string) (string, error) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		return "", fmt.Errorf("GEMINI_API_KEY not set")
 	}
+
+	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey
+
+	reqBody := model.GeminiRequest{
+		Contents: []model.Content{
+			{
+				Parts: []model.Part{
+					{Text: prompt},
+				},
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("gemini error: %s", body)
+	}
+
+	var geminiResp model.GeminiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
+		return "", err
+	}
+
+	if len(geminiResp.Candidates) == 0 ||
+		len(geminiResp.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("empty response from Gemini")
+	}
+
+	return geminiResp.Candidates[0].Content.Parts[0].Text, nil
 }
 
 func main() {
@@ -219,6 +311,14 @@ func main() {
 		}
 
 		for _, msg := range incomingSQSMessages {
+			log.Printf("Processing message for patient %d", msg.PatientID)
+
+			err = deleteMessageFromSQS(context.Background(), sqsClient, inputQueueURL, msg)
+			if err != nil {
+				log.Printf("failed to delete message from SQS for patient %d: %v", msg.PatientID, err)
+				continue
+			}
+
 			report, err := getSanitizedReport(msg.Report)
 			if err != nil {
 				log.Printf("failed to sanitize report for patient %d: %v", msg.PatientID, err)
@@ -243,3 +343,5 @@ func main() {
 		}
 	}
 }
+
+func awsString(s string) *string { return &s }
