@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 	"trend-analyzer/internal/model"
 
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/samber/lo"
@@ -28,6 +30,8 @@ const (
 
 	inputQueueName  = "parser-analyzer-queue"
 	outputQueueName = "analyzer-etl-queue"
+
+	snsTopicName = "system-events"
 )
 
 type FileParserMessage struct {
@@ -120,7 +124,37 @@ func deleteMessageFromSQS(ctx context.Context, client *sqs.Client, queueURL stri
 	return err
 }
 
-func emitSNSNotification(db *gorm.DB, patientID int64) error {
+// Add SNS client initialization
+func newSNSClient(ctx context.Context) *sns.Client {
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		log.Fatalf("unable to load AWS SDK config: %v", err)
+	}
+
+	snsClient := sns.New(sns.Options{
+		Region:       cfg.Region,
+		Credentials:  cfg.Credentials,
+		HTTPClient:   cfg.HTTPClient,
+		BaseEndpoint: cfg.BaseEndpoint,
+	})
+
+	return snsClient
+}
+
+// Get or create SNS topic
+func getTopicArn(ctx context.Context, snsClient *sns.Client, topicName string) string {
+	// Try to create topic (idempotent - returns existing if already created)
+	resp, err := snsClient.CreateTopic(ctx, &sns.CreateTopicInput{
+		Name: awsString(topicName),
+	})
+	if err != nil {
+		log.Fatalf("failed to create/get SNS topic: %v", err)
+	}
+	return *resp.TopicArn
+}
+
+// Update the emitSNSNotification function
+func emitSNSNotification(ctx context.Context, snsClient *sns.Client, topicArn string, db *gorm.DB, patientID int64, diagnosis *MLResponse) error {
 	patient := &model.Patient{}
 	result := db.Where("id = ?", patientID).First(patient)
 	if result.Error != nil {
@@ -128,7 +162,32 @@ func emitSNSNotification(db *gorm.DB, patientID int64) error {
 		return result.Error
 	}
 
-	log.Printf("Emitting SNS notification for patient %s (placeholder)", patient.Name)
+	// Create notification message
+	message := map[string]interface{}{
+		"patientId":   patientID,
+		"patientName": patient.Name,
+		"diagnosis":   diagnosis.Diagnosis,
+		"concern":     diagnosis.Concern,
+		"timestamp":   time.Now().Format(time.RFC3339),
+	}
+
+	messageJSON, err := json.Marshal(message)
+	if err != nil {
+		return fmt.Errorf("failed to marshal SNS message: %w", err)
+	}
+
+	// Publish to SNS
+	_, err = snsClient.Publish(ctx, &sns.PublishInput{
+		TopicArn: awsString(topicArn),
+		Message:  awsString(string(messageJSON)),
+		Subject:  awsString(fmt.Sprintf("Health Concern Alert - Patient %s", patient.Name)),
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to publish SNS message: %w", err)
+	}
+
+	log.Printf("Emitted SNS notification for patient %s (ID: %d)", patient.Name, patientID)
 	return nil
 }
 
@@ -312,8 +371,10 @@ func main() {
 	log.Println("Connected to DB")
 
 	sqsClient := newSQSClient(ctx)
+	snsClient := newSNSClient(ctx)
 	inputQueueURL := getQueueURL(ctx, sqsClient, inputQueueName)
 	_ = getQueueURL(ctx, sqsClient, outputQueueName)
+	topicArn := getTopicArn(ctx, snsClient, snsTopicName)
 
 	for {
 		incomingSQSMessages, err := readFromSQS(context.Background(), sqsClient, inputQueueURL)
@@ -340,13 +401,11 @@ func main() {
 				log.Printf("failed to save current state for patient %d: %v", msg.PatientID, err)
 			}
 
-			// TODO ETL logic to come here
-
 			patientTrend := diagnosePatient(db, msg.PatientID)
 			log.Printf("Patient %d trend analysis: %+v", msg.PatientID, patientTrend)
 
 			if patientTrend.Concern {
-				err = emitSNSNotification(db, msg.PatientID)
+				err = emitSNSNotification(ctx, snsClient, topicArn, db, msg.PatientID, patientTrend)
 				if err != nil {
 					log.Printf("failed to emit SNS notification for patient %d: %v", msg.PatientID, err)
 				}
