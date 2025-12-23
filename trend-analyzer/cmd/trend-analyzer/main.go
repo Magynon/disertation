@@ -182,6 +182,17 @@ func saveCurrentStateForPatient(db *gorm.DB, report string, patientID int64) err
 		return result.Error
 	}
 
+	denormalizedData := &model.DenormalizedData{
+		State:       report,
+		PatientName: patient.Name,
+		PatientSsn:  patient.Ssn,
+	}
+	if err := db.Create(denormalizedData).Error; err != nil {
+		log.Printf("failed to insert denormalized data into DB: %v", err)
+	} else {
+		log.Printf("Inserted denormalized data ID=%d for patient ID=%d", denormalizedData.ID, patient.ID)
+	}
+
 	return nil
 }
 

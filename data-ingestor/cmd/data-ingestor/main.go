@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -27,8 +28,11 @@ const (
 	brokerAddr = "kafka:9092"
 	topic      = "blood-tests"
 	groupID    = "blood-test-consumer-group"
+	dbDSN      = "postgres://user:password@postgres:5432/postgres?sslmode=disable"
 
-	dbDSN = "postgres://user:password@postgres:5432/postgres?sslmode=disable"
+	// Concurrency settings
+	maxWorkers = 10
+	maxRetries = 3
 )
 
 type DataIngestorMessage struct {
@@ -36,6 +40,20 @@ type DataIngestorMessage struct {
 	Key        string `json:"key"`
 	PatientID  int64  `json:"patient_id"`
 	UploadedAt string `json:"uploadedAt"`
+}
+
+type ProcessingTask struct {
+	msg         kafka.Message
+	patientName string
+	patientSSN  string
+	s3Key       string
+}
+
+type ProcessingResult struct {
+	patientID int64
+	s3Key     string
+	bucket    string
+	err       error
 }
 
 // ---------- Setup ----------
@@ -98,7 +116,126 @@ func newDB() *gorm.DB {
 	return db
 }
 
-// ---------- Core Logic ----------
+// ---------- Core Logic with Goroutines ----------
+
+func processMessageConcurrent(ctx context.Context, s3Client *s3.Client, sqsClient *sqs.Client, queueURL string, msg kafka.Message, db *gorm.DB) {
+	log.Printf("Received Kafka message: Key=%s, Value size=%d bytes", string(msg.Key), len(msg.Value))
+
+	// Parse patient data
+	patientName, patientSSN, err := parsePatientData(msg.Key)
+	if err != nil {
+		log.Printf("failed to parse patient data: %v", err)
+		return
+	}
+
+	s3Key := generateS3Key(msg.Key)
+	task := ProcessingTask{
+		msg:         msg,
+		patientName: patientName,
+		patientSSN:  patientSSN,
+		s3Key:       s3Key,
+	}
+
+	var wg sync.WaitGroup
+	resultChan := make(chan ProcessingResult, 3)
+
+	// Upload to S3 concurrently
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		uploadWithRetry(ctx, s3Client, task, resultChan)
+	}()
+
+	// Process patient data concurrently
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		processPatientData(db, task, resultChan)
+	}()
+
+	// Wait for initial operations to complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	var patientID int64
+	var uploadSucceeded bool
+	for result := range resultChan {
+		if result.err != nil {
+			log.Printf("Processing error: %v", result.err)
+			continue
+		}
+		if result.patientID > 0 {
+			patientID = result.patientID
+		}
+		if result.s3Key != "" {
+			uploadSucceeded = true
+		}
+	}
+
+	// Only proceed if both operations succeeded
+	if patientID > 0 && uploadSucceeded {
+		var finalWg sync.WaitGroup
+
+		// Create records and send SQS message concurrently
+		finalWg.Add(2)
+
+		go func() {
+			defer finalWg.Done()
+			if err := createRecordsAndQueue(db, patientID, s3Key); err != nil {
+				log.Printf("failed to create records: %v", err)
+			}
+		}()
+
+		go func() {
+			defer finalWg.Done()
+			if err := sendToSQSWithRetry(ctx, sqsClient, queueURL, bucketName, s3Key, patientID); err != nil {
+				log.Printf("failed to send SQS message: %v", err)
+			}
+		}()
+
+		finalWg.Wait()
+	}
+}
+
+func uploadWithRetry(ctx context.Context, client *s3.Client, task ProcessingTask, resultChan chan<- ProcessingResult) {
+	var lastErr error
+	for i := 0; i < maxRetries; i++ {
+		if err := uploadToS3(ctx, client, bucketName, task.s3Key, task.msg.Value); err != nil {
+			lastErr = err
+			time.Sleep(time.Duration(i+1) * time.Second)
+			continue
+		}
+		log.Printf("Uploaded PNG to S3: s3://%s/%s", bucketName, task.s3Key)
+		resultChan <- ProcessingResult{s3Key: task.s3Key, bucket: bucketName}
+		return
+	}
+	resultChan <- ProcessingResult{err: fmt.Errorf("upload failed after %d retries: %w", maxRetries, lastErr)}
+}
+
+func processPatientData(db *gorm.DB, task ProcessingTask, resultChan chan<- ProcessingResult) {
+	patient, err := upsertPatient(db, task.patientName, task.patientSSN)
+	if err != nil {
+		resultChan <- ProcessingResult{err: fmt.Errorf("patient processing failed: %w", err)}
+		return
+	}
+	resultChan <- ProcessingResult{patientID: patient.ID}
+}
+
+func sendToSQSWithRetry(ctx context.Context, client *sqs.Client, queueURL, bucket, key string, patientID int64) error {
+	var lastErr error
+	for i := 0; i < maxRetries; i++ {
+		if err := sendToSQS(ctx, client, queueURL, bucket, key, patientID); err != nil {
+			lastErr = err
+			time.Sleep(time.Duration(i+1) * time.Second)
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("SQS send failed after %d retries: %w", maxRetries, lastErr)
+}
 
 func uploadToS3(ctx context.Context, client *s3.Client, bucket, key string, data []byte) error {
 	_, err := client.PutObject(ctx, &s3.PutObjectInput{
@@ -135,84 +272,76 @@ func sendToSQS(ctx context.Context, client *sqs.Client, queueURL, bucket, key st
 	return err
 }
 
-func processMessage(ctx context.Context, s3Client *s3.Client, sqsClient *sqs.Client, queueURL string, msg kafka.Message, db *gorm.DB) {
-	log.Printf("Received Kafka message: Key=%s, Value size=%d bytes", string(msg.Key), len(msg.Value))
-
-	patientData := bytes.SplitN(msg.Key, []byte(","), 2)
-	if len(patientData) != 2 {
-		log.Printf("invalid message key format, expected 'Name,ID': %s", msg.Key)
-		return
+func parsePatientData(key []byte) (name, ssn string, err error) {
+	parts := bytes.SplitN(key, []byte(","), 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid key format, expected 'Name,SSN': %s", key)
 	}
-
-	patientName := string(patientData[0])
-	patientSSN := string(patientData[1])
-
-	// Generate unique filename
-	timestamp := time.Now().Format("20060102_150405")
-	key := fmt.Sprintf("pngs/%s_%s.png", msg.Key, timestamp)
-
-	// Upload to S3
-	if err := uploadToS3(ctx, s3Client, bucketName, key, msg.Value); err != nil {
-		log.Printf("failed to upload to S3: %v", err)
-		return
-	}
-	log.Printf("Uploaded PNG to S3: s3://%s/%s", bucketName, key)
-
-	// Insert patient if not exists
-	var patient model.Patient
-	if err := db.Where("ssn = ?", patientSSN).First(&patient).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			patient = model.Patient{
-				Ssn:  patientSSN,
-				Name: patientName,
-			}
-			if err := db.Create(&patient).Error; err != nil {
-				log.Printf("failed to insert patient into DB: %v", err)
-				return
-			}
-			log.Printf("Inserted new patient: ID=%d, Name=%s", patient.ID, patient.Name)
-		} else {
-			log.Printf("failed to query patient: %v", err)
-			return
-		}
-	} else {
-		log.Printf("Patient already exists: ID=%d, Name=%s", patient.ID, patient.Name)
-	}
-
-	// Notify SQS
-	if err := sendToSQS(ctx, sqsClient, queueURL, bucketName, key, patient.ID); err != nil {
-		log.Printf("failed to send message to SQS: %v", err)
-	}
-
-	record := &model.Record{
-		CloudReference: key,
-	}
-	if err := db.Create(record).Error; err != nil {
-		log.Printf("failed to insert record into DB: %v", err)
-	}
-
-	patientRecordMap := &model.PatientRecordMap{
-		UserID:   patient.ID,
-		RecordID: record.ID,
-	}
-	if err := db.Create(patientRecordMap).Error; err != nil {
-		log.Printf("failed to map patient to record in DB: %v", err)
-	} else {
-		log.Printf("Mapped patient ID=%d to record ID=%d", patient.ID, record.ID)
-	}
-
-	messageQueue := &model.MessageQueue{
-		Type: model.MessageTypeParse,
-		Data: []byte(fmt.Sprintf(`{"cloudReference":"%s"}`, key)),
-	}
-	if err := db.Create(messageQueue).Error; err != nil {
-		log.Printf("failed to insert message queue entry into DB: %v", err)
-	} else {
-		log.Printf("Inserted message queue entry ID=%d for parsing", messageQueue.ID)
-	}
+	return string(parts[0]), string(parts[1]), nil
 }
 
-// ---------- Main ----------
+func generateS3Key(messageKey []byte) string {
+	timestamp := time.Now().Format("20060102_150405")
+	return fmt.Sprintf("pngs/%s_%s.png", messageKey, timestamp)
+}
+
+func upsertPatient(db *gorm.DB, name, ssn string) (*model.Patient, error) {
+	var patient model.Patient
+
+	err := db.Where("ssn = ?", ssn).First(&patient).Error
+	if err == nil {
+		log.Printf("Patient already exists: ID=%d, Name=%s", patient.ID, patient.Name)
+		return &patient, nil
+	}
+
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("query patient: %w", err)
+	}
+
+	patient = model.Patient{
+		Ssn:  ssn,
+		Name: name,
+	}
+	if err := db.Create(&patient).Error; err != nil {
+		return nil, fmt.Errorf("create patient: %w", err)
+	}
+
+	log.Printf("Created new patient: ID=%d, Name=%s", patient.ID, patient.Name)
+	return &patient, nil
+}
+
+func createRecordsAndQueue(db *gorm.DB, patientID int64, cloudRef string) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		record := &model.Record{
+			CloudReference: cloudRef,
+		}
+		if err := tx.Create(record).Error; err != nil {
+			return fmt.Errorf("create record: %w", err)
+		}
+
+		mapping := &model.PatientRecordMap{
+			UserID:   patientID,
+			RecordID: record.ID,
+		}
+		if err := tx.Create(mapping).Error; err != nil {
+			return fmt.Errorf("create patient-record mapping: %w", err)
+		}
+		log.Printf("Mapped patient ID=%d to record ID=%d", patientID, record.ID)
+
+		queueEntry := &model.MessageQueue{
+			Type: model.MessageTypeParse,
+			Data: []byte(fmt.Sprintf(`{"cloudReference":"%s"}`, cloudRef)),
+		}
+		if err := tx.Create(queueEntry).Error; err != nil {
+			return fmt.Errorf("create queue entry: %w", err)
+		}
+		log.Printf("Created message queue entry ID=%d for parsing", queueEntry.ID)
+
+		return nil
+	})
+}
+
+// ---------- Main with Worker Pool ----------
 
 func main() {
 	ctx := context.Background()
@@ -220,27 +349,46 @@ func main() {
 	db := newDB()
 	log.Println("Connected to DB")
 
-	// Setup clients
 	reader := newKafkaReader()
 	defer reader.Close()
-
 	log.Println("Kafka reader initialized")
 
 	s3Client, sqsClient := newAWSClients(ctx)
 	queueURL := getQueueURL(ctx, sqsClient, queueName)
-
 	log.Printf("S3 client initialized, SQS queue URL: %s", queueURL)
 
-	// Consume Kafka messages
-	for {
-		msg, err := reader.ReadMessage(ctx)
-		if err != nil {
-			log.Fatalf("could not read Kafka message: %v", err)
-		}
-		processMessage(ctx, s3Client, sqsClient, queueURL, msg, db)
-	}
-}
+	// Create worker pool
+	msgChan := make(chan kafka.Message, maxWorkers)
+	var wg sync.WaitGroup
 
-// ---------- Helpers ----------
+	// Start workers
+	for i := 0; i < maxWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			log.Printf("Worker %d started", workerID)
+			for msg := range msgChan {
+				processMessageConcurrent(ctx, s3Client, sqsClient, queueURL, msg, db)
+			}
+			log.Printf("Worker %d stopped", workerID)
+		}(i)
+	}
+
+	// Read messages and send to workers
+	go func() {
+		for {
+			msg, err := reader.ReadMessage(ctx)
+			if err != nil {
+				log.Printf("Error reading Kafka message: %v", err)
+				close(msgChan)
+				break
+			}
+			msgChan <- msg
+		}
+	}()
+
+	wg.Wait()
+	log.Println("All workers finished")
+}
 
 func awsString(s string) *string { return &s }

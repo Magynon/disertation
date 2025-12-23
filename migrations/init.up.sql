@@ -16,6 +16,15 @@ CREATE TYPE message_status AS ENUM (
 -- ================================
 -- Tables
 -- ================================
+CREATE TABLE denormalized_data
+(
+    id         BIGSERIAL PRIMARY KEY,
+    state       TEXT     NOT NULL,
+    patient_name VARCHAR(200) NOT NULL,
+    patient_ssn  VARCHAR(11)  NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE state
 (
     id         BIGSERIAL PRIMARY KEY,
