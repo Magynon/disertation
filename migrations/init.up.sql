@@ -20,6 +20,8 @@ CREATE TABLE denormalized_data
 (
     id         BIGSERIAL PRIMARY KEY,
     state       TEXT     NOT NULL,
+    diagnosis   TEXT     NOT NULL,
+    concern BOOLEAN NOT NULL,
     patient_name VARCHAR(200) NOT NULL,
     patient_ssn  VARCHAR(11)  NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()

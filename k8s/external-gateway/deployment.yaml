@@ -1,0 +1,35 @@
+# k8s/external-gateway.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: external-gateway
+  template:
+    metadata:
+      labels:
+        app: external-gateway
+    spec:
+      containers:
+        - name: external-gateway
+          image: external-gateway:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-gateway
+spec:
+  type: NodePort  # Add this line
+  selector:
+    app: external-gateway
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+      nodePort: 30080

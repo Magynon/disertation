@@ -23,7 +23,7 @@ start-dev-stack: start-localstack start-kafka-stack start-psql
 stop-dev-stack: stop-kafka-stack stop-localstack stop-psql
 	@echo "🧹 Dev stack fully stopped"
 
-start-services: build-ingestor deploy-ingestor build-parser deploy-parser build-analyzer deploy-analyzer
+start-services: build-ingestor deploy-ingestor build-parser deploy-parser build-analyzer deploy-analyzer build-gateway deploy-gateway
 	@echo "🚀 Services started"
 
 stop-services: delete-ingestor delete-parser delete-analyzer
@@ -115,6 +115,21 @@ deploy-analyzer:
 delete-analyzer:
 	kubectl --context $(KUBECTL_CONTEXT) delete deployment trend-analyzer --ignore-not-found=true
 
+# -----------------------
+# External Gateway Deployment
+# -----------------------
+
+build-gateway:
+	docker build -f external-gateway/Dockerfile -t external-gateway:latest ./external-gateway
+	kind load docker-image external-gateway:latest --name $(KIND_CLUSTER_NAME)
+
+deploy-gateway:
+	kubectl --context $(KUBECTL_CONTEXT) apply -f k8s/external-gateway/deployment.yaml
+	kubectl --context $(KUBECTL_CONTEXT) wait --for=condition=available deployment/external-gateway --timeout=60s
+	kubectl --context $(KUBECTL_CONTEXT) get pods -l app=external-gateway
+
+delete-gateway:
+	kubectl --context $(KUBECTL_CONTEXT) delete deployment external-gateway --ignore-not-found=true
 
 # -----------------------
 # Helpers for LocalStack and Kafka

@@ -211,7 +211,7 @@ func getSanitizedReport(report string) (string, error) {
 	return base64.StdEncoding.EncodeToString([]byte(response)), nil
 }
 
-func saveCurrentStateForPatient(db *gorm.DB, report string, patientID int64) error {
+func saveCurrentStateForPatient(db *gorm.DB, report string, patientID int64, patientTrend *MLResponse) error {
 	patient := &model.Patient{}
 	result := db.Where("id = ?", patientID).First(patient)
 	if result.Error != nil {
@@ -243,14 +243,18 @@ func saveCurrentStateForPatient(db *gorm.DB, report string, patientID int64) err
 
 	denormalizedData := &model.DenormalizedData{
 		State:       report,
+		Diagnosis:   patientTrend.Diagnosis,
+		Concern:     patientTrend.Concern,
 		PatientName: patient.Name,
 		PatientSsn:  patient.Ssn,
 	}
 	if err := db.Create(denormalizedData).Error; err != nil {
 		log.Printf("failed to insert denormalized data into DB: %v", err)
-	} else {
-		log.Printf("Inserted denormalized data ID=%d for patient ID=%d", denormalizedData.ID, patient.ID)
+
+		return err
 	}
+
+	log.Printf("Inserted denormalized data ID=%d for patient ID=%d", denormalizedData.ID, patient.ID)
 
 	return nil
 }
@@ -396,13 +400,13 @@ func main() {
 				log.Printf("failed to sanitize report for patient %d: %v", msg.PatientID, err)
 			}
 
-			err = saveCurrentStateForPatient(db, report, msg.PatientID)
+			patientTrend := diagnosePatient(db, msg.PatientID)
+			log.Printf("Patient %d trend analysis: %+v", msg.PatientID, patientTrend)
+
+			err = saveCurrentStateForPatient(db, report, msg.PatientID, patientTrend)
 			if err != nil {
 				log.Printf("failed to save current state for patient %d: %v", msg.PatientID, err)
 			}
-
-			patientTrend := diagnosePatient(db, msg.PatientID)
-			log.Printf("Patient %d trend analysis: %+v", msg.PatientID, patientTrend)
 
 			if patientTrend.Concern {
 				err = emitSNSNotification(ctx, snsClient, topicArn, db, msg.PatientID, patientTrend)
