@@ -1,6 +1,8 @@
 module trend-analyzer
 
-go 1.23
+go 1.24.0
+
+toolchain go1.24.1
 
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.2

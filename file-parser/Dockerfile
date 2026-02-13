@@ -1,7 +1,7 @@
 # -------------------------------
 # Build stage
 # -------------------------------
-FROM golang:1.23-bookworm AS builder
+FROM golang:1.24.0-bookworm AS builder
 
 # Install Tesseract dependencies
 RUN apt-get update -qq && \
